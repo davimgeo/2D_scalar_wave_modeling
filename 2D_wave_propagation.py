@@ -37,12 +37,22 @@ def get_snapshots(snap_bool, snapshots, snap_ratio, future_wave, n):
     if snap_bool and not n % snap_ratio: snapshots.append(future_wave)
     return snapshots
 
+def register_seismogram(n,recx,recz,seismogram,field):
+    nrec = len(recx)
+    for i in range(nrec):        
+        seismogram[n,i] = field[int(recz[i]),int(recx[i])]
+
 def finite_differences(wavelet, Nx, Nz, Nt, dx, dz, dt, model, snap_bool, snap_num):
 
     if not check_parameters(dx, dt): raise ValueError("Current (dx, dt) are causing numerical dispersion!")
 
     srcxId = 208
     srczId = 10
+
+    recxId     = np.arange(0,Nx)
+    reczId     = np.zeros(Nx) + 20
+    nrec       = len(recxId)
+    seismogram = np.zeros((Nt,nrec))
 
     Upas = np.zeros((Nz, Nx))
     Upre = np.zeros((Nz, Nx))
@@ -52,6 +62,9 @@ def finite_differences(wavelet, Nx, Nz, Nt, dx, dz, dt, model, snap_bool, snap_n
     snap_ratio = int(Nt / snap_num)
 
     for n in range(Nt):
+        
+        register_seismogram(n,recxId,reczId, seismogram, Upre)
+
         Upre[srczId,srcxId] += wavelet[n] / (dx*dx)
 
         laplacian_2D = get_laplacian_2D(Upre, Nx, Nz, dx, dz)
@@ -62,7 +75,7 @@ def finite_differences(wavelet, Nx, Nz, Nt, dx, dz, dt, model, snap_bool, snap_n
 
         Upas, Upre = Upre, Ufut
 
-    return Ufut, snapshots
+    return Ufut, snapshots, seismogram
 
 @njit(parallel=True)
 def get_laplacian_2D(U, Nx, Nz, dx, dz):
@@ -99,13 +112,13 @@ Nt = 5001
 
 dx = 10
 dz = 10
-dt = 4e-4
+dt = 4.0e-4
 fmax = 10
 
 interfaces = [40, 100] 
 vp_interfaces = [1500, 2000, 2500]
 
-snapshots = True
+snapshots = False
 snap_num = 100
 
 model = set_model(Nx, Nz, vp_interfaces, interfaces)
@@ -127,5 +140,10 @@ else:
    ax.set_ylabel("Amplitude",fontsize=15) 
 
 #ani.save('wave_propagation.mp4', writer='ffmpeg')
+
+
+plt.figure()
+plt.title("Seismogram")
+plt.imshow(wave_propagation[2],aspect="auto",cmap="gray")
 
 plt.show()  
