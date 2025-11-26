@@ -50,6 +50,7 @@ class Acoustic:
     self.snapshots = []
 
     self.transit_time = np.zeros((self.nzz, self.nxx))
+    self.ref = np.zeros((self.nzz, self.nxx))
 
   def get_ricker(self):
     t0 = 2*np.pi / self.fmax
@@ -88,17 +89,24 @@ class Acoustic:
         iz = int(self.srczId[i]) + self.nb
         self.upre[iz, ix] += self.ricker[t] / dh2
 
-        current_time = int(t * self.dt)
-        laplacian2d(
-            self.upre, d2u_dx2, d2u_dz2, 
-            self.nzz, self.nxx, dh2, current_time,
-            self.transit_time, self.upas
+        current_time = t * self.dt
+        dx2_dz2 = laplacian2d(self.upre, d2u_dx2, d2u_dz2, self.nzz, self.nxx, dh2)
+
+        update_tt(
+            self.upre, 
+            self.ref, 
+            self.transit_time, 
+            current_time,
+            self.nzz, 
+            self.nxx
         )
 
-        self.ufut = (d2u_dx2 + d2u_dz2 * arg) + 2 * self.upre - self.upas
+        self.ufut =  arg * dx2_dz2 + 2 * self.upre - self.upas
 
         self.upas = self.upre * self.damp2D
         self.upre = self.ufut * self.damp2D
+
+        self.ref = self.upas.copy()
 
         for irec in range(self.nrec):
           rx = int(self.recx[irec]) + self.nb
@@ -281,13 +289,11 @@ class Geometry:
 
 @njit(parallel=True)
 def laplacian2d(
-    upre: np.ndarray, d2u_dx2: np.ndarray, d2u_dz2: np.ndarray, 
-    nzz: int, nxx: int, dh2: float, current_time: int,
-    transit_time: np.ndarray, upas
+    upre, d2u_dx2, d2u_dz2, 
+    nzz, nxx, dh2,
 ) -> None:
   inv_dh2 = 1.0 / (5040.0 * dh2)
 
-  ref = upas.copy()
   for i in prange(4, nzz - 4):
     for j in range(4, nxx - 4):
       d2u_dx2[i, j] = (
@@ -302,13 +308,25 @@ def laplacian2d(
           1008 * upre[i, j+2] + 128   * upre[i, j+3] - 9    * upre[i, j+4]
       ) * inv_dh2
 
+  return d2u_dx2 + d2u_dz2
+
+@njit(parallel=True)
+def update_tt(
+    upre: np.ndarray,
+    ref: np.ndarray,
+    transit_time: np.ndarray,
+    current_time: float,
+    nzz: int,
+    nxx: int,
+) -> None:
+  for i in prange(4, nzz - 4):
+    for j in range(4, nxx - 4):
       # Criterio da Amplitude Maxima - Andre Bulcao
       # if abs(u(Ω,t)) >= abs(ref(Ω)) then
       # ref(Ω) = u(Ω,t)
       # T(Ω) = t
       # endif
-
-      if np.abs(upre[i][j]) >= np.abs(ref[i][j]):
-        ref[i][j] = upre[i][j]
-        transit_time[i][j] = current_time
+      if abs(upre[i,j]) >= abs(ref[i,j]):
+          ref[i,j] = upre[i,j]
+          transit_time[i,j] = current_time
 

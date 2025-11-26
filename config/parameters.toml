@@ -28,7 +28,7 @@ perc = 99
 seismogram_output_path = "data/seismogram/"
 save_seismogram = false
 
-nt   = 2501
+nt   = 5001
 dt   = 4.0e-4
 
 # Wavelet
