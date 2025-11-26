@@ -1,30 +1,39 @@
+from __future__ import annotations
+
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import animation
-from numba import njit
+from numba import njit, prange
 
 class Acoustic:
-  def __init__(self, c):
-    self.nx = c.nx
-    self.nz = c.nz
+  def __init__(self, model: Model, geom: Geometry, c):
+    self.model_obj = model
+    self.geom = geom
+    self.c = c
 
-    self.nb = c.nb
-    self.factor = c.factor
+    self.model = model.model
+    self.nx = model.nx
+    self.nz = model.nz
+    self.nb = model.nb
+    self.nxx = model.nxx
+    self.nzz = model.nzz
 
-    self.nxx = 2 * self.nb + self.nx
-    self.nzz = 2 * self.nb + self.nz
-
-    self.damp2D = np.ones((self.nzz, self.nxx))
-
-    self.dh = c.dh
-
-    self.model = np.zeros((self.nz, self.nx))
-
-    self.interfaces = c.interfaces
-    self.value_interfaces = c.velocity_interfaces
+    self.recx = geom.recx
+    self.recz = geom.recz
+    self.srcxId = geom.srcxId
+    self.srczId = geom.srczId
+    self.nrec = geom.nrec
 
     self.nt = c.nt
     self.dt = c.dt
+    self.save_seismogram = c.save_seismogram
+    self.seismogram_output_path = c.seismogram_output_path
+    self.seismogram = np.zeros((self.nt, self.nrec))
+
+    self.dh = c.dh
+
+    self.factor = c.factor
+    self.damp2D = np.ones((self.nzz, self.nxx))
 
     self.fmax = c.fmax
     self.ricker = np.zeros(self.nt)
@@ -33,21 +42,14 @@ class Acoustic:
     self.upre = np.zeros((self.nzz, self.nxx))
     self.ufut = np.zeros((self.nzz, self.nxx))
 
-    self.recx = np.arange(0, self.nxx)
-    self.recz = np.zeros(self.nxx) + 10
-    self.nrec = len(self.recx)
-
     self.perc = c.perc
 
-    self.save_seismogram = c.save_seismogram
-    self.seismogram_output_path = c.seismogram_output_path
-    self.seismogram = np.zeros((self.nt, self.nrec))
- 
     self.snap_path = c.snap_path
-    self.snap_num  = c.snap_num
+    self.snap_num = c.snap_num
     self.snap_bool = c.snap_bool
-
     self.snapshots = []
+
+    self.transit_time = np.zeros((self.nzz, self.nxx))
 
   def get_ricker(self):
     t0 = 2*np.pi / self.fmax
@@ -57,41 +59,6 @@ class Acoustic:
 
     self.ricker = (1.0 - 2.0*arg) * np.exp(-arg)
 
-  def get_model(self):
-    if not len(self.interfaces):
-      self.model[:, :] = self.value_interfaces[0]
-    else:
-      self.model[:self.interfaces[0], :] = self.value_interfaces[0]
-
-      for layer, velocity in enumerate(self.value_interfaces[1:]):
-        self.model[self.interfaces[layer]:, :] = velocity
-
-  def set_boundary(self):
-    model_ext  = np.zeros((self.nzz, self.nxx))
-  
-    for j in range(self.nx):
-      for i in range(self.nz):
-        model_ext[i + self.nb, j + self.nb] = self.model[i, j]
-
-    for j in range(self.nb, self.nx + self.nb):
-      for i in range(self.nb):
-        # top
-        model_ext[i, j] = model_ext[self.nb, j]
-
-        # bottom
-        model_ext[self.nz + self.nb + i, j] = model_ext[self.nz + self.nb - 1, j]
-
-    for i in range(self.nzz):
-      for j in range(self.nb):
-        # left
-        model_ext[i, j] = model_ext[i, self.nb]
-
-        # right
-        model_ext[i, self.nx + self.nb + j] = model_ext[i, self.nx + self.nb - 1]
-
-    self.model = model_ext
-
-  # Made by Paulo Bastos(https://github.com/phbastosa)
   def set_damper(self):
     damp1D = np.zeros(self.nb)
 
@@ -105,31 +72,42 @@ class Acoustic:
     for j in range(self.nxx):
         self.damp2D[:self.nb,j] *= damp1D
         self.damp2D[-self.nb:,j] *= damp1D[::-1]   
-
+  
   def fd(self):
-    srcxId = self.nxx // 2
-    srczId = self.nzz // 2
+    d2u_dx2 = np.zeros((self.nzz, self.nxx))
+    d2u_dz2 = np.zeros((self.nzz, self.nxx))
 
     snap_ratio = int(self.nt / self.snap_num)
 
     dh2 = self.dh * self.dh
     arg = self.dt * self.dt * self.model * self.model
 
-    for n in range(self.nt):
-      self.upre[srczId, srcxId] += self.ricker[n] / dh2
+    for i in range(len(self.srcxId)):
+      for t in range(self.nt):
+        ix = int(self.srcxId[i]) + self.nb
+        iz = int(self.srczId[i]) + self.nb
+        self.upre[iz, ix] += self.ricker[t] / dh2
 
-      laplacian_2D = get_laplacian_2D(self.upre, self.nxx, self.nzz, dh2)
+        current_time = int(t * self.dt)
+        laplacian2d(
+            self.upre, d2u_dx2, d2u_dz2, 
+            self.nzz, self.nxx, dh2, current_time,
+            self.transit_time, self.upas
+        )
 
-      self.ufut = (laplacian_2D * arg) + 2*self.upre - self.upas
+        self.ufut = (d2u_dx2 + d2u_dz2 * arg) + 2 * self.upre - self.upas
 
-      self.upas = self.upre * self.damp2D
-      self.upre = self.ufut * self.damp2D
+        self.upas = self.upre * self.damp2D
+        self.upre = self.ufut * self.damp2D
 
-      if self.snap_bool: 
-        self.__get_snapshots(n, snap_ratio)
+        for irec in range(self.nrec):
+          rx = int(self.recx[irec]) + self.nb
+          rz = int(self.recz[irec]) + self.nb
+          self.seismogram[t, irec] = self.upre[rz, rx]
 
-      for i in range(self.nrec):
-        self.seismogram[n, i] = self.upre[int(self.recz[i]), int(self.recx[i])]
+        if self.snap_bool:
+          if not t % snap_ratio:
+            self.snapshots.append(self.upre.copy())
 
     if self.save_seismogram:
       (
@@ -142,11 +120,7 @@ class Acoustic:
           ) 
       )
 
-  def __get_snapshots(self, n, snap_ratio):
-    if not n % snap_ratio:
-      self.snapshots.append(self.upre.copy())
-
-  def plot_snapshots(self):
+  def plot_snapshots(self) -> None:
     xloc = np.linspace(0, self.nx-1, 11, dtype=int)
     xlab = np.array(xloc * self.dh, dtype=int)
 
@@ -174,11 +148,14 @@ class Acoustic:
           alpha=0.7
       )
 
+      ax.plot(self.recx, self.recz, 'bv')
+      ax.plot(self.srcxId, self.srczId, 'r*')
+
       ims.append([model_frame, snap_frame])
 
     ani = animation.ArtistAnimation(
         fig, ims,
-        interval=(self.nt / len(self.snapshots)) * self.dt * 1e3,
+        interval=(self.nt / len(self.snapshots) + 1) * self.dt * 1e3,
         blit=False,
         repeat_delay=0
     )
@@ -196,7 +173,7 @@ class Acoustic:
 
     return ani
 
-  def plot_seismogram(self):
+  def plot_seismogram(self) -> None:
     scale_min = np.percentile(self.seismogram, 100 - self.perc)
     scale_max = np.percentile(self.seismogram, self.perc)
 
@@ -229,24 +206,109 @@ class Acoustic:
     plt.tight_layout()
     plt.show()
 
+class Model:
+  def __init__(self, c) -> None:
+    self.nx = c.nx
+    self.nz = c.nz
+    self.nb = c.nb
+
+    self.nxx = 2*self.nb + self.nx
+    self.nzz = 2*self.nb + self.nz
+
+    self.model = np.zeros((self.nz, self.nx))
+
+    self.interfaces = c.interfaces
+    self.value_interfaces = c.velocity_interfaces
+
+  def get_model(self) -> None:
+    if not len(self.interfaces):
+      self.model[:, :] = self.value_interfaces[0]
+    else:
+      self.model[:self.interfaces[0], :] = self.value_interfaces[0]
+      for layer, vel in enumerate(self.value_interfaces[1:]):
+        self.model[self.interfaces[layer]:, :] = vel
+
+  def set_boundary(self) -> None:
+    model_ext = np.zeros((self.nzz, self.nxx))
+
+    for j in range(self.nx):
+      for i in range(self.nz):
+        model_ext[i+self.nb, j+self.nb] = self.model[i, j]
+
+    for j in range(self.nb, self.nx+self.nb):
+      for i in range(self.nb):
+        model_ext[i, j] = model_ext[self.nb, j]
+        model_ext[self.nz+self.nb+i, j] = model_ext[self.nz+self.nb-1, j]
+
+    for i in range(self.nzz):
+      for j in range(self.nb):
+        model_ext[i, j] = model_ext[i, self.nb]
+        model_ext[i, self.nx+self.nb+j] = model_ext[i, self.nx+self.nb-1]
+
+    self.model = model_ext
+
+class Geometry:
+  def __init__(self, c) -> None:
+    self.c = c
+
+    self.recx = []
+    self.recz = []
+    self.srcxId = []
+    self.srczId = []
+
+    self.nrec = 0
+
+  def get_geometry(self) -> None:
+    receivers = np.loadtxt(self.c.receivers, delimiter=',', skiprows=1)
+
+    if receivers.ndim == 1:
+      self.recx = np.array([receivers[1]])
+      self.recz = np.array([receivers[2]])
+    else:
+      self.recx = receivers[:, 1]
+      self.recz = receivers[:, 2]
+
+    sources = np.loadtxt(self.c.sources, delimiter=',', skiprows=1)
+
+    if sources.ndim == 1:
+      self.srcxId = np.array([sources[1]])
+      self.srczId = np.array([sources[2]])
+    else:
+      self.srcxId = sources[:, 1]
+      self.srczId = sources[:, 2]
+
+    self.nrec = len(self.recx)
+
 @njit(parallel=True)
-def get_laplacian_2D(U, nxx, nzz, dh2):
-  d2u_dx2 = np.zeros((nzz, nxx))
-  d2u_dz2 = np.zeros((nzz, nxx))
+def laplacian2d(
+    upre: np.ndarray, d2u_dx2: np.ndarray, d2u_dz2: np.ndarray, 
+    nzz: int, nxx: int, dh2: float, current_time: int,
+    transit_time: np.ndarray, upas
+) -> None:
+  inv_dh2 = 1.0 / (5040.0 * dh2)
 
-  for i in range(4, nzz - 4):
+  ref = upas.copy()
+  for i in prange(4, nzz - 4):
     for j in range(4, nxx - 4):
-      d2u_dx2[i][j] = (
-        -9*U[i-4, j] + 128*U[i-3, j] - 1008*U[i-2, j] + 8064*U[i-1, j]
-        - 14350*U[i, j] + 8064*U[i+1, j] - 1008*U[i+2, j] + 128*U[i+3, j]
-        - 9*U[i+4, j]
-      ) / (5040 * dh2)
+      d2u_dx2[i, j] = (
+          -9   * upre[i-4, j] + 128   * upre[i-3, j] - 1008 * upre[i-2, j] +
+          8064 * upre[i-1, j] - 14350 * upre[i,   j] + 8064 * upre[i+1, j] -
+          1008 * upre[i+2, j] + 128   * upre[i+3, j] - 9    * upre[i+4, j]
+      ) * inv_dh2
 
-      d2u_dz2[i][j] = (
-        -9*U[i, j-4] + 128*U[i, j-3] - 1008*U[i, j-2] + 8064*U[i, j-1]
-        - 14350*U[i, j] + 8064*U[i, j+1] - 1008*U[i, j+2] + 128*U[i, j+3]
-        - 9*U[i, j+4]
-      ) / (5040 * dh2)
+      d2u_dz2[i, j] = (
+          -9   * upre[i, j-4] + 128   * upre[i, j-3] - 1008 * upre[i, j-2] +
+          8064 * upre[i, j-1] - 14350 * upre[i, j]   + 8064 * upre[i, j+1] -
+          1008 * upre[i, j+2] + 128   * upre[i, j+3] - 9    * upre[i, j+4]
+      ) * inv_dh2
 
-  return d2u_dx2 + d2u_dz2
+      # Criterio da Amplitude Maxima - Andre Bulcao
+      # if abs(u(Ω,t)) >= abs(ref(Ω)) then
+      # ref(Ω) = u(Ω,t)
+      # T(Ω) = t
+      # endif
+
+      if np.abs(upre[i][j]) >= np.abs(ref[i][j]):
+        ref[i][j] = upre[i][j]
+        transit_time[i][j] = current_time
 

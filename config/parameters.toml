@@ -2,12 +2,18 @@
 
 debug = true
 
+# Geometry
+
+receivers = "data/input/receivers.txt"
+sources = "data/input/sources.txt" 
+
 # Model
+
 nx = 416
 nz = 160
 
 nb     = 100
-factor = 0.015
+factor = 0.010
 
 dh = 10.0
 
@@ -16,23 +22,26 @@ interfaces = []
 velocity_interfaces = [1500]
 
 # Seismogram
+
 perc = 99
 
+seismogram_output_path = "data/seismogram/"
 save_seismogram = false
 
-seismogram_output_path = "data/seismogram/"
-
-nt   = 5001
+nt   = 2501
 dt   = 4.0e-4
 
 # Wavelet
+
 fmax = 10.0
 
 # Snapshots
+
 snap_path = "data/snapshots/"
 
 snap_num  = 50
 snap_bool = true
+
 
 
 

@@ -1,9 +1,6 @@
 import time
 
-from src import Acoustic, Config
-
-import numpy as np
-import matplotlib.pyplot as plt
+from src import *
 
 PATH = "config/parameters.toml"
 
@@ -17,27 +14,33 @@ def measure_runtime(func):
 
   return wrapper
 
-import numpy as np
-
 @measure_runtime
 def main():
   cfg = Config(PATH).load()
 
-  acous = Acoustic(cfg)
+  model = Model(cfg)
+  model.get_model()
+  model.set_boundary()
 
-  acous.get_model()
-  acous.set_boundary()
-  acous.set_damper()
+  geom = Geometry(cfg)
+  geom.get_geometry()
+
+  acous = Acoustic(model, geom, cfg)
+
   acous.get_ricker()
-
+  acous.set_damper()
   acous.fd()
+
+  return acous
+
+import matplotlib.pyplot as plt
+if __name__ == "__main__":
+  acous = main()
 
   acous.plot_snapshots()
   acous.plot_seismogram()
 
-  return acous
-
-if __name__ == "__main__":
-  acous = main()
+  plt.imshow(acous.transit_time)
+  plt.show()
 
 

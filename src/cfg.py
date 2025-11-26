@@ -5,6 +5,9 @@ from dataclasses import dataclass
 class Parameters:
   debug = False
 
+  receivers = ""
+  sources = ""
+
   nx = 0
   nz = 0
 
@@ -31,7 +34,6 @@ class Parameters:
   snap_num  = 0
   snap_bool = False
 
-
 class Config(Parameters):
   def __init__(self, toml_path: str):
     super().__init__()
@@ -48,5 +50,6 @@ class Config(Parameters):
       setattr(self, key, value)
 
     return self
+
 
 
