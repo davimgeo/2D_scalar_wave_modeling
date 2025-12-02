@@ -20,10 +20,13 @@ class Parameters:
 
   velocity_interfaces = []
 
+  tlag = 0.0
+
   save_seismogram = False
 
   perc = 99
 
+  seismogram_input_path = ""
   seismogram_output_path = ""
   nt   = 0
   dt   = 0.0

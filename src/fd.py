@@ -6,134 +6,110 @@ from matplotlib import animation
 from numba import njit, prange
 
 class Acoustic:
-  def __init__(self, model: Model, geom: Geometry, c):
-    self.model_obj = model
+  def __init__(self, model: Model, geom: Geometry, seis: Seismogram, c):
+    self.mdl = model
     self.geom = geom
+    self.seis = seis
     self.c = c
 
-    self.model = model.model
-    self.nx = model.nx
-    self.nz = model.nz
-    self.nb = model.nb
-    self.nxx = model.nxx
-    self.nzz = model.nzz
+    self.damp2D = np.ones((self.mdl.nzz, self.mdl.nxx))
 
-    self.recx = geom.recx
-    self.recz = geom.recz
-    self.srcxId = geom.srcxId
-    self.srczId = geom.srczId
-    self.nrec = geom.nrec
+    self.tlag = c.tlag
+    self.ricker = np.zeros(self.c.nt)
 
-    self.nt = c.nt
-    self.dt = c.dt
-    self.save_seismogram = c.save_seismogram
-    self.seismogram_output_path = c.seismogram_output_path
-    self.seismogram = np.zeros((self.nt, self.nrec))
+    self.upas = np.zeros((self.mdl.nzz, self.mdl.nxx))
+    self.upre = np.zeros((self.mdl.nzz, self.mdl.nxx))
+    self.ufut = np.zeros((self.mdl.nzz, self.mdl.nxx))
 
-    self.dh = c.dh
+    self.seismogram = seis.seismogram
+    self.snapshots = seis.snapshots
 
-    self.factor = c.factor
-    self.damp2D = np.ones((self.nzz, self.nxx))
-
-    self.fmax = c.fmax
-    self.ricker = np.zeros(self.nt)
-
-    self.upas = np.zeros((self.nzz, self.nxx))
-    self.upre = np.zeros((self.nzz, self.nxx))
-    self.ufut = np.zeros((self.nzz, self.nxx))
-
-    self.perc = c.perc
-
-    self.snap_path = c.snap_path
-    self.snap_num = c.snap_num
-    self.snap_bool = c.snap_bool
-    self.snapshots = []
-
-    self.transit_time = np.zeros((self.nzz, self.nxx))
-    self.ref = np.zeros((self.nzz, self.nxx))
+    self.transit_time = np.zeros((self.mdl.nzz, self.mdl.nxx))
+    self.ref = np.zeros((self.mdl.nzz, self.mdl.nxx))
 
   def get_ricker(self):
-    t0 = 2*np.pi / self.fmax
-    t = np.arange(self.nt) * self.dt - t0
+    fc = self.c.fmax / (3.0 * np.sqrt(np.pi))
+    t = np.arange(self.c.nt) * self.c.dt - self.tlag
 
-    arg = (np.pi * self.fmax * t) ** 2
+    arg = np.pi * (t * fc * np.pi) ** 2.0 
 
-    self.ricker = (1.0 - 2.0*arg) * np.exp(-arg)
+    self.ricker = (1.0 - 2.0 * arg) * np.exp(-arg)
 
   def set_damper(self):
-    damp1D = np.zeros(self.nb)
+    damp1D = np.zeros(self.mdl.nb)
 
-    for i in range(self.nb):   
-        damp1D[i] = np.exp(-(self.factor*(self.nb - i))**2.0)
+    for i in range(self.mdl.nb):
+        damp1D[i] = np.exp(-(self.c.factor*(self.mdl.nb - i))**2.0)
 
-    for i in range(self.nzz):
-        self.damp2D[i,:self.nb] *= damp1D
-        self.damp2D[i,-self.nb:] *= damp1D[::-1]
+    for i in range(self.mdl.nzz):
+        self.damp2D[i,:self.mdl.nb] *= damp1D
+        self.damp2D[i,-self.mdl.nb:] *= damp1D[::-1]
 
-    for j in range(self.nxx):
-        self.damp2D[:self.nb,j] *= damp1D
-        self.damp2D[-self.nb:,j] *= damp1D[::-1]   
-  
+    for j in range(self.mdl.nxx):
+        self.damp2D[:self.mdl.nb,j] *= damp1D
+        self.damp2D[-self.mdl.nb:,j] *= damp1D[::-1]
+
   def fd(self):
-    d2u_dx2 = np.zeros((self.nzz, self.nxx))
-    d2u_dz2 = np.zeros((self.nzz, self.nxx))
+    d2u_dx2 = np.zeros((self.mdl.nzz, self.mdl.nxx))
+    d2u_dz2 = np.zeros((self.mdl.nzz, self.mdl.nxx))
 
-    snap_ratio = int(self.nt / self.snap_num)
+    snap_ratio = int(self.c.nt / self.c.snap_num)
 
-    dh2 = self.dh * self.dh
-    arg = self.dt * self.dt * self.model * self.model
+    dh2 = self.c.dh * self.c.dh
+    arg = self.c.dt * self.c.dt * self.mdl.model * self.mdl.model
 
-    for i in range(len(self.srcxId)):
-      for t in range(self.nt):
-        ix = int(self.srcxId[i]) + self.nb
-        iz = int(self.srczId[i]) + self.nb
+    for i in range(len(self.geom.srcxId)):
+      for t in range(self.c.nt):
+        ix = int(self.geom.srcxId[i]) + self.mdl.nb
+        iz = int(self.geom.srczId[i]) + self.mdl.nb
         self.upre[iz, ix] += self.ricker[t] / dh2
 
-        current_time = t * self.dt
-        dx2_dz2 = laplacian2d(self.upre, d2u_dx2, d2u_dz2, self.nzz, self.nxx, dh2)
-
-        update_tt(
-            self.upre, 
-            self.ref, 
-            self.transit_time, 
-            current_time,
-            self.nzz, 
-            self.nxx
+        dx2_dz2 = laplacian2d(
+            self.upre, d2u_dx2, d2u_dz2,
+            self.mdl.nzz, self.mdl.nxx, dh2
         )
 
-        self.ufut =  arg * dx2_dz2 + 2 * self.upre - self.upas
+        current_time = t * self.c.dt
+        update_tt(
+            self.upre,
+            self.ref,
+            self.transit_time,
+            current_time,
+            self.mdl.nzz,
+            self.mdl.nxx
+        )
+
+        self.ufut = arg * dx2_dz2 + 2 * self.upre - self.upas
 
         self.upas = self.upre * self.damp2D
         self.upre = self.ufut * self.damp2D
 
-        self.ref = self.upas.copy()
-
-        for irec in range(self.nrec):
-          rx = int(self.recx[irec]) + self.nb
-          rz = int(self.recz[irec]) + self.nb
+        for irec in range(self.geom.nrec):
+          rx = int(self.geom.recx[irec]) + self.mdl.nb
+          rz = int(self.geom.recz[irec]) + self.mdl.nb
           self.seismogram[t, irec] = self.upre[rz, rx]
 
-        if self.snap_bool:
+        if self.c.snap_bool:
           if not t % snap_ratio:
             self.snapshots.append(self.upre.copy())
 
-    if self.save_seismogram:
+    if self.c.save_seismogram:
       (
-        self.model
+        self.seis.seismogram
         .flatten('F')
         .astype("float32", order='F')
         .tofile(
-          self.seismogram_output_path + 
-          f"seismogram_nt{self.nt}_dt{self.dt}_nrec{self.nrec}.bin"
-          ) 
+          self.c.seismogram_output_path +
+          f"seismogram_nt{self.c.nt}_dt{self.c.dt}_nrec{self.geom.nrec}.bin"
+        )
       )
 
-  def plot_snapshots(self) -> None:
-    xloc = np.linspace(0, self.nx-1, 11, dtype=int)
-    xlab = np.array(xloc * self.dh, dtype=int)
+  def plot_snapshots(self):
+    xloc = np.linspace(0, self.mdl.nx-1, 11, dtype=int)
+    xlab = np.array(xloc * self.c.dh, dtype=int)
 
-    zloc = np.linspace(0, self.nz-1, 7, dtype=int)
-    zlab = np.array(zloc * self.dh, dtype=int)
+    zloc = np.linspace(0, self.mdl.nz-1, 7, dtype=int)
+    zlab = np.array(zloc * self.c.dh, dtype=int)
 
     fig, ax = plt.subplots(figsize=(12, 5))
 
@@ -142,64 +118,67 @@ class Acoustic:
       scale = 2.0 * np.std(snap)
 
       model_frame = ax.imshow(
-          self.model[self.nb:self.nb+self.nz, self.nb:self.nb+self.nx],
-          aspect="auto",
-          cmap="jet",
-          alpha=0.5
+        self.mdl.model[self.mdl.nb:self.mdl.nb+self.mdl.nz,
+                             self.mdl.nb:self.mdl.nb+self.mdl.nx],
+        aspect="auto", cmap="jet", alpha=0.5
       )
 
       snap_frame = ax.imshow(
-          snap[self.nb:self.nb+self.nz, self.nb:self.nb+self.nx],
-          aspect="auto",
-          cmap="Greys",
-          vmin=-scale, vmax=scale,
-          alpha=0.7
+        snap[self.mdl.nb:self.mdl.nb+self.mdl.nz,
+             self.mdl.nb:self.mdl.nb+self.mdl.nx],
+        aspect="auto", cmap="Greys",
+        vmin=-scale, vmax=scale, alpha=0.7
       )
 
-      ax.plot(self.recx, self.recz, 'bv')
-      ax.plot(self.srcxId, self.srczId, 'r*')
+      ax.plot(self.geom.recx, self.geom.recz, 'bv')
+      ax.plot(self.geom.srcxId, self.geom.srczId, 'r*')
 
       ims.append([model_frame, snap_frame])
 
     ani = animation.ArtistAnimation(
-        fig, ims,
-        interval=(self.nt / len(self.snapshots) + 1) * self.dt * 1e3,
-        blit=False,
-        repeat_delay=0
+      fig, ims,
+      interval=(self.c.nt / len(self.snapshots) + 1) * self.c.dt * 1e3,
+      blit=False,
+      repeat_delay=0
     )
 
     ax.set_xticks(xloc)
     ax.set_xticklabels(xlab)
-    ax.set_xlabel("Distance [m]", fontsize=15)
 
     ax.set_yticks(zloc)
     ax.set_yticklabels(zlab)
-    ax.set_ylabel("Depth [m]", fontsize=15)
 
-    fig.tight_layout()
     plt.show()
-
     return ani
 
-  def plot_seismogram(self) -> None:
-    scale_min = np.percentile(self.seismogram, 100 - self.perc)
-    scale_max = np.percentile(self.seismogram, self.perc)
+class Seismogram:
+  def __init__(self, geom, c):
+    self.geom = geom
+    self.c = c
+
+    self.seismogram_load = np.zeros((self.c.nt, self.geom.nrec))
+    self.seismogram = np.zeros((self.c.nt, self.geom.nrec))
+    self.snapshots = []
+
+  def load(self):
+    self.seismogram_load = np.fromfile(
+        self.c.seismogram_input_path, dtype=np.float32, count=self.c.nt*self.geom.nrec
+        ).reshape([self.c.nt, self.geom.nrec], order='F')
+
+  def plot(self, seismogram):
+    scale_min = np.percentile(seismogram, 100 - self.c.perc)
+    scale_max = np.percentile(seismogram, self.c.perc)
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    tloc = np.linspace(0, self.nt - 1, 11, dtype = int)
-    tlab = np.around(tloc * self.dt, decimals = 1)
+    tloc = np.linspace(0, self.c.nt - 1, 11, dtype=int)
+    tlab = np.around(tloc * self.c.dt, decimals=1)
 
-    xloc = np.linspace(0, self.nrec - 1, 9)
-    xlab = np.array(10 * xloc, dtype = int)
+    xloc = np.linspace(0, self.geom.nrec - 1, 9)
+    xlab = np.array(10 * xloc, dtype=int)
 
-    img = ax.imshow(
-        self.seismogram, aspect = "auto", cmap="Greys", 
-        vmin=scale_min, vmax=scale_max
-    )
-
-    cbar = fig.colorbar(img, ax = ax, extend = 'neither')
-    cbar.minorticks_on()
+    img = ax.imshow(seismogram, aspect="auto", cmap="Greys",
+                    vmin=scale_min, vmax=scale_max)
 
     ax.set_yticks(tloc)
     ax.set_yticklabels(tlab)
@@ -207,11 +186,9 @@ class Acoustic:
     ax.set_xticks(xloc)
     ax.set_xticklabels(xlab)
 
-    ax.set_title("Seismogram", fontsize = 18)
-    ax.set_xlabel("Distance [m]", fontsize = 15)
-    ax.set_ylabel("Two Way Time [s]", fontsize = 15)
+    ax.set_xlabel("Offset (m)", fontsize=13)
+    ax.set_ylabel("TWT (s)", fontsize=13)
 
-    plt.tight_layout()
     plt.show()
 
 class Model:
@@ -259,10 +236,8 @@ class Geometry:
   def __init__(self, c) -> None:
     self.c = c
 
-    self.recx = []
-    self.recz = []
-    self.srcxId = []
-    self.srczId = []
+    self.recx, self.recz     = [], []
+    self.srcxId, self.srczId = [], []
 
     self.nrec = 0
 

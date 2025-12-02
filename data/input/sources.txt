@@ -1,2 +1,2 @@
 # srcId, srcxId, srczId
-1,208,80
+1,208,20

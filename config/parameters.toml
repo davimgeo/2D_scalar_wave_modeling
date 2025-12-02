@@ -13,27 +13,29 @@ nx = 416
 nz = 160
 
 nb     = 100
-factor = 0.010
+factor = 0.009
 
 dh = 10.0
 
-interfaces = []
+interfaces = [80]
 
-velocity_interfaces = [1500]
+velocity_interfaces = [1500, 2000]
 
 # Seismogram
 
 perc = 99
 
-seismogram_output_path = "data/seismogram/"
+seismogram_input_path = "data/output/seismogram_water_nt5001_dt0.0004_nrec84.bin"
+seismogram_output_path = "data/output/"
 save_seismogram = false
 
-nt   = 5001
-dt   = 4.0e-4
+nt = 5001
+dt = 4.0e-4
 
 # Wavelet
 
-fmax = 10.0
+fmax = 30.0
+tlag = 0.3
 
 # Snapshots
 

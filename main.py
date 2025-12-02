@@ -25,22 +25,29 @@ def main():
   geom = Geometry(cfg)
   geom.get_geometry()
 
-  acous = Acoustic(model, geom, cfg)
+  seis = Seismogram(geom, cfg)
+  # load seismogram to remove direct wave
+  seis.load()
+
+  acous = Acoustic(model, geom, seis, cfg)
 
   acous.get_ricker()
   acous.set_damper()
   acous.fd()
 
-  return acous
+  return acous, seis
 
 import matplotlib.pyplot as plt
 if __name__ == "__main__":
-  acous = main()
+  acous, seis = main()
 
   acous.plot_snapshots()
-  acous.plot_seismogram()
+  seis.plot(seis.seismogram)
 
-  plt.imshow(acous.transit_time)
-  plt.show()
+  diff = seis.seismogram - seis.seismogram_load
+  seis.plot(diff)
+
+  #plt.imshow(acous.transit_time[acous.mdl.nb:acous.mdl.nb+acous.mdl.nz, acous.mdl.nb:acous.mdl.nb+acous.mdl.nx])
+  #plt.show()
 
 
