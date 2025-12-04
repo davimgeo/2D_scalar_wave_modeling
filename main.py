@@ -24,13 +24,13 @@ def main():
 
   geom = Geometry(cfg)
   geom.get_geometry()
+  geom.get_dt_direct_wave()
 
   seis = Seismogram(geom, cfg)
   # load seismogram to remove direct wave
   seis.load()
 
   acous = Acoustic(model, geom, seis, cfg)
-
   acous.get_ricker()
   acous.set_damper()
   acous.fd()
@@ -38,16 +38,16 @@ def main():
   return acous, seis
 
 import matplotlib.pyplot as plt
+import numpy as np
 if __name__ == "__main__":
   acous, seis = main()
 
   acous.plot_snapshots()
+  seis.remove_direct_wave()
   seis.plot(seis.seismogram)
 
-  diff = seis.seismogram - seis.seismogram_load
-  seis.plot(diff)
-
-  #plt.imshow(acous.transit_time[acous.mdl.nb:acous.mdl.nb+acous.mdl.nz, acous.mdl.nb:acous.mdl.nb+acous.mdl.nx])
-  #plt.show()
+  plt.imshow(acous.transit_time[acous.mdl.nb:acous.mdl.nb+acous.mdl.nz,
+                                 acous.mdl.nb:acous.mdl.nb+acous.mdl.nx]) 
+  plt.show()
 
 

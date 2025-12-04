@@ -7,6 +7,7 @@ class Parameters:
 
   receivers = ""
   sources = ""
+  offset = 0.0
 
   nx = 0
   nz = 0

@@ -22,7 +22,8 @@ class Acoustic:
     self.ufut = np.zeros((self.mdl.nzz, self.mdl.nxx))
 
     self.seismogram = seis.seismogram
-    self.snapshots = seis.snapshots
+
+    self.snapshots = []
 
     self.transit_time = np.zeros((self.mdl.nzz, self.mdl.nxx))
     self.ref = np.zeros((self.mdl.nzz, self.mdl.nxx))
@@ -59,7 +60,7 @@ class Acoustic:
     arg = self.c.dt * self.c.dt * self.mdl.model * self.mdl.model
 
     for i in range(len(self.geom.srcxId)):
-      for t in range(self.c.nt):
+      for t in range(self.c.nt - 1):
         ix = int(self.geom.srcxId[i]) + self.mdl.nb
         iz = int(self.geom.srczId[i]) + self.mdl.nb
         self.upre[iz, ix] += self.ricker[t] / dh2
@@ -79,10 +80,10 @@ class Acoustic:
             self.mdl.nxx
         )
 
-        self.ufut = arg * dx2_dz2 + 2 * self.upre - self.upas
+        self.upas = arg * dx2_dz2 + 2 * self.upre - self.ufut
 
-        self.upas = self.upre * self.damp2D
-        self.upre = self.ufut * self.damp2D
+        self.ufut = self.upre * self.damp2D
+        self.upre = self.upas * self.damp2D
 
         for irec in range(self.geom.nrec):
           rx = int(self.geom.recx[irec]) + self.mdl.nb
@@ -93,6 +94,8 @@ class Acoustic:
           if not t % snap_ratio:
             self.snapshots.append(self.upre.copy())
 
+    self.reverse_propagation_source(dh2, arg, snap_ratio, d2u_dx2, d2u_dz2)
+  
     if self.c.save_seismogram:
       (
         self.seis.seismogram
@@ -103,6 +106,38 @@ class Acoustic:
           f"seismogram_nt{self.c.nt}_dt{self.c.dt}_nrec{self.geom.nrec}.bin"
         )
       )
+
+  def reverse_propagation_source(self, dh2, arg, snap_ratio, d2u_dx2, d2u_dz2):
+    for i in range(len(self.geom.srcxId)):
+      for t in range(self.c.nt - 1, -1, -1):
+        ix = int(self.geom.srcxId[i]) + self.mdl.nb
+        iz = int(self.geom.srczId[i]) + self.mdl.nb
+        self.upre[iz, ix] += self.ricker[t] / dh2
+
+        dx2_dz2 = laplacian2d(
+            self.upre, d2u_dx2, d2u_dz2,
+            self.mdl.nzz, self.mdl.nxx, dh2
+        )
+
+        current_time = t * self.c.dt
+        update_tt(
+            self.upre,
+            self.ref,
+            self.transit_time,
+            current_time,
+            self.mdl.nzz,
+            self.mdl.nxx
+        )
+        
+        # upas -> ufut
+        self.upas = arg * dx2_dz2 + 2 * self.upre - self.ufut
+
+        self.ufut = self.upre * self.damp2D
+        self.upre = self.ufut * self.damp2D
+
+        if self.c.snap_bool:
+          if not t % snap_ratio:
+            self.snapshots.append(self.upre.copy())
 
   def plot_snapshots(self):
     xloc = np.linspace(0, self.mdl.nx-1, 11, dtype=int)
@@ -157,28 +192,47 @@ class Seismogram:
     self.c = c
 
     self.seismogram_load = np.zeros((self.c.nt, self.geom.nrec))
+
     self.seismogram = np.zeros((self.c.nt, self.geom.nrec))
-    self.snapshots = []
 
   def load(self):
     self.seismogram_load = np.fromfile(
         self.c.seismogram_input_path, dtype=np.float32, count=self.c.nt*self.geom.nrec
         ).reshape([self.c.nt, self.geom.nrec], order='F')
 
+  def remove_direct_wave(self):
+    nt = self.seismogram.shape[0]
+
+    for j in range(self.geom.nrec):
+      t0 = self.geom.dt_canditates[j]
+      t0_idx = int(t0 / self.c.dt)
+
+      samples = np.arange(nt)
+
+      condition = samples <= t0_idx  
+
+      self.seismogram[condition, j] = 0.0
+
   def plot(self, seismogram):
+    tloc = np.linspace(0, self.c.nt - 1, 11, dtype=int)
+    tlab = np.around(tloc * self.c.dt, decimals=1)
+
+    xloc = np.linspace(0, self.geom.nrec - 1, 9)
+    xlab = np.array(self.c.dh * xloc, dtype=int)
+
     scale_min = np.percentile(seismogram, 100 - self.c.perc)
     scale_max = np.percentile(seismogram, self.c.perc)
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    tloc = np.linspace(0, self.c.nt - 1, 11, dtype=int)
-    tlab = np.around(tloc * self.c.dt, decimals=1)
-
-    xloc = np.linspace(0, self.geom.nrec - 1, 9)
-    xlab = np.array(10 * xloc, dtype=int)
-
     img = ax.imshow(seismogram, aspect="auto", cmap="Greys",
                     vmin=scale_min, vmax=scale_max)
+
+    # plot of direct wave curve
+    x_plot = np.arange(self.geom.nrec)
+    y_plot = self.geom.dt_canditates / self.c.dt
+
+    ax.plot(x_plot, y_plot, 'r--')
 
     ax.set_yticks(tloc)
     ax.set_yticklabels(tlab)
@@ -236,10 +290,14 @@ class Geometry:
   def __init__(self, c) -> None:
     self.c = c
 
-    self.recx, self.recz     = [], []
-    self.srcxId, self.srczId = [], []
+    self.recx, self.recz     = np.array([]), np.array([])
+    self.srcxId, self.srczId = np.array([]), np.array([])
 
     self.nrec = 0
+
+    self.dt_canditates = np.array([])
+
+    self.max_dt = 0.0
 
   def get_geometry(self) -> None:
     receivers = np.loadtxt(self.c.receivers, delimiter=',', skiprows=1)
@@ -261,6 +319,17 @@ class Geometry:
       self.srczId = sources[:, 2]
 
     self.nrec = len(self.recx)
+
+  def get_dt_direct_wave(self, epsilon=0.70e-1):
+    for sx, sz in zip(self.srcxId, self.srczId):
+      ix = int(sx) + self.c.nb
+      iz = int(sz) + self.c.nb
+
+      rx = self.recx + self.c.nb
+      rz = self.recz + self.c.nb
+
+      off = np.sqrt((ix - rx)**2 + (iz - rz)**2) * self.c.dh
+      self.dt_canditates = (off / 1500.0) + self.c.tlag + epsilon
 
 @njit(parallel=True)
 def laplacian2d(
